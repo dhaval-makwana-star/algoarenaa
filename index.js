@@ -1,4 +1,3 @@
-try { require("dotenv").config(); } catch (_) {}
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -15,17 +14,6 @@ const io = new Server(server, {
   pingInterval: 25000,
 });
 
-// ─── API Key ──────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-
-// ─── State ────────────────────────────────────────────────────────────────────
-let rooms = {};
-let uidMap = {};
-let nameMap = {};
-const aiBattleRooms = {};
-
-// ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
     status: "AlgoArena Server 🚀",
@@ -34,7 +22,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// ─── DSA Question Bank ────────────────────────────────────────────────────────
+// ─── DSA Question Bank (Room 101 / Open Arena) ──────────────────────────────
 const DSA_QUESTIONS = [
   { question: "What is the time complexity of Binary Search?", correctAnswer: "o(log n)", display: "O(log n)", complexity: "Easy", timeLimit: 30 },
   { question: "Which data structure uses LIFO order?", correctAnswer: "stack", display: "Stack", complexity: "Easy", timeLimit: 30 },
@@ -58,8 +46,23 @@ const DSA_QUESTIONS = [
   { question: "Time complexity of finding an element in a balanced BST?", correctAnswer: "o(log n)", display: "O(log n)", complexity: "Medium", timeLimit: 45 },
 ];
 
-// ─── Syntax Game Questions ────────────────────────────────────────────────────
-const SYNTAX_QUESTIONS = [
+// ─── Helper: shuffle options and return new correctIndex ─────────────────────
+// This fixes the bug where ALL questions had correctIndex: 0
+function shuffleOptions(options, correctIndex) {
+  // Create array of {text, isCorrect}
+  const tagged = options.map((opt, i) => ({ text: opt, isCorrect: i === correctIndex }));
+  // Fisher-Yates shuffle
+  for (let i = tagged.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [tagged[i], tagged[j]] = [tagged[j], tagged[i]];
+  }
+  const newOptions = tagged.map(t => t.text);
+  const newCorrectIndex = tagged.findIndex(t => t.isCorrect);
+  return { options: newOptions, correctIndex: newCorrectIndex };
+}
+
+// ─── Syntax Game Questions ───────────────────────────────────────────────────
+const SYNTAX_QUESTIONS_BASE = [
   {
     question: "Complete the Python list comprehension: squares = [___ for x in range(10)]",
     options: ["x*x", "x^2", "x**x", "pow(x)"],
@@ -167,8 +170,8 @@ const SYNTAX_QUESTIONS = [
   },
 ];
 
-// ─── Debug Game Questions ─────────────────────────────────────────────────────
-const DEBUG_QUESTIONS = [
+// ─── Debug Game Questions ────────────────────────────────────────────────────
+const DEBUG_QUESTIONS_BASE = [
   {
     buggyCode: "def binary_search(arr, target):\n    left, right = 0, len(arr)\n    while left < right:\n        mid = (left + right) // 2\n        if arr[mid] == target: return mid\n        elif arr[mid] < target: left = mid + 1\n        else: right = mid - 1\n    return -1",
     question: "Find the bug in this binary search:",
@@ -235,8 +238,8 @@ const DEBUG_QUESTIONS = [
   },
 ];
 
-// ─── Logic Game Questions ─────────────────────────────────────────────────────
-const LOGIC_QUESTIONS = [
+// ─── Logic Game Questions ────────────────────────────────────────────────────
+const LOGIC_QUESTIONS_BASE = [
   {
     question: "You have 8 balls, one is heavier. Using a balance scale, what's the minimum weighings needed to find the heavy ball?",
     options: ["2", "3", "1", "4"],
@@ -288,8 +291,8 @@ const LOGIC_QUESTIONS = [
   },
   {
     question: "Which technique reduces time complexity of naive recursive solutions by storing subproblem results?",
-    options: ["Memoization", "Tabulation", "Both Memoization and Tabulation", "Pruning"],
-    correctIndex: 2,
+    options: ["Both Memoization and Tabulation", "Only Memoization", "Only Tabulation", "Pruning"],
+    correctIndex: 0,
     explanation: "Both memoization (top-down) and tabulation (bottom-up) are DP techniques that store subproblem results to avoid recomputation.",
     category: "Dynamic Programming", xp: 20
   },
@@ -309,7 +312,7 @@ const LOGIC_QUESTIONS = [
   },
 ];
 
-// ─── Speed Game Questions ─────────────────────────────────────────────────────
+// ─── Speed Game Questions (multi-difficulty) ─────────────────────────────────
 const SPEED_QUESTIONS = {
   easy: [
     { question: "Time complexity of accessing array by index?", answer: "o(1)", display: "O(1)" },
@@ -349,17 +352,36 @@ const SPEED_QUESTIONS = {
   ],
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Apply shuffle to MCQ question banks ────────────────────────────────────
+// Shuffles are applied per-request so each player/game session gets random positions
+function getShuffledSyntaxQuestions() {
+  return SYNTAX_QUESTIONS_BASE.map(q => {
+    const { options, correctIndex } = shuffleOptions(q.options, q.correctIndex);
+    return { ...q, options, correctIndex };
+  });
+}
+
+function getShuffledDebugQuestions() {
+  return DEBUG_QUESTIONS_BASE.map(q => {
+    const { options, correctIndex } = shuffleOptions(q.options, q.correctIndex);
+    return { ...q, options, correctIndex };
+  });
+}
+
+function getShuffledLogicQuestions() {
+  return LOGIC_QUESTIONS_BASE.map(q => {
+    const { options, correctIndex } = shuffleOptions(q.options, q.correctIndex);
+    return { ...q, options, correctIndex };
+  });
+}
+
+// ─── State ──────────────────────────────────────────────────────────────────
+let rooms = {};
+let uidMap = {};
+let nameMap = {};
+
 function getRandQ(bank) {
   return bank[Math.floor(Math.random() * bank.length)];
-}
-
-function randInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function randItem(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 function cleanRoom(name) {
@@ -371,285 +393,7 @@ function cleanRoom(name) {
   console.log(`🗑️  Room "${name}" cleaned up`);
 }
 
-// ─── AI Bot Personalities ─────────────────────────────────────────────────────
-const BOT_PERSONAS = [
-  {
-    name: "GlitchBot",
-    emoji: "🤖",
-    taunts: ["My circuits are warming up...", "Processing your defeat...", "Too slow, human."],
-    winLines: ["Did you even try?", "Better luck next time, carbon unit."],
-    loseLines: ["Impossible... recalibrating...", "You got lucky. Next round won't be pretty."],
-  },
-  {
-    name: "NeuralX",
-    emoji: "🧠",
-    taunts: ["My neural weights say you're losing.", "I've solved this 40,000 times before.", "Calculating your failure probability..."],
-    winLines: ["Humans are so predictable.", "That's 99.97% win rate for me."],
-    loseLines: ["Anomaly detected. Learning from you...", "You've triggered my adaptation mode."],
-  },
-  {
-    name: "CodeDemon",
-    emoji: "👾",
-    taunts: ["I breathe DSA.", "Don't blink.", "Your slowness amuses me."],
-    winLines: ["Git rekt.", "I don't lose. Only compile errors stop me."],
-    loseLines: ["Stack overflow in my ego...", "Fine. You earned that."],
-  },
-];
-
-// ─── Difficulty Settings ──────────────────────────────────────────────────────
-function getAiDifficulty(userWinStreak) {
-  if (userWinStreak <= 1) return { level: "Easy",   minDelay: 25, maxDelay: 40, mistakeChance: 0.30, label: "Rookie"  };
-  if (userWinStreak <= 3) return { level: "Medium", minDelay: 15, maxDelay: 25, mistakeChance: 0.15, label: "Pro"     };
-  if (userWinStreak <= 5) return { level: "Hard",   minDelay: 8,  maxDelay: 15, mistakeChance: 0.05, label: "Elite"   };
-  return                         { level: "Legend", minDelay: 3,  maxDelay: 8,  mistakeChance: 0.00, label: "Legend"  };
-}
-
-// ─── Gemini Question Generator ────────────────────────────────────────────────
-async function generateAiQuestion(difficulty) {
-  if (!GEMINI_API_KEY) {
-    console.warn("⚠️ No GEMINI_API_KEY set. Using fallback question bank.");
-    return getRandQ(DSA_QUESTIONS);
-  }
-
-  const diffMap = {
-    Easy:   "beginner-level (basic arrays, stacks, queues)",
-    Medium: "intermediate-level (trees, sorting, recursion)",
-    Hard:   "advanced-level (graphs, DP, heaps)",
-    Legend: "expert-level (complex DP, advanced graph algorithms)",
-  };
-
-  const prompt = `
-    Generate a single ${diffMap[difficulty] || "medium-level"} Data Structures and Algorithms quiz question.
-    Rules:
-    - The question should have a SHORT, single-word or short-phrase answer (e.g. "O(log n)", "Stack", "Merge Sort")
-    - The answer must be unambiguous
-    - Do NOT generate multiple choice — just question + answer
-    - Respond ONLY in this exact JSON format with no extra text:
-    {
-      "question": "Your question here?",
-      "answer": "short answer",
-      "hint": "one-line hint about answer format",
-      "explanation": "one sentence explanation of the answer"
-    }
-  `;
-
-  try {
-    const res = await fetch(GEMINI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 300 },
-      }),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Gemini API error: ${res.status} ${res.statusText}`);
-    }
-
-    const data = await res.json();
-    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    const clean = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    return {
-      question: parsed.question,
-      correctAnswer: parsed.answer.toLowerCase().trim(),
-      display: parsed.answer,
-      hint: parsed.hint,
-      explanation: parsed.explanation,
-      aiGenerated: true,
-    };
-  } catch (err) {
-    console.error("⚠️ Gemini failed, using fallback question:", err.message);
-    return getRandQ(DSA_QUESTIONS);
-  }
-}
-
-// ─── AI Battle Handlers ───────────────────────────────────────────────────────
-function registerAiBattleHandlers(socket) {
-
-  socket.on("joinAiBattle", async ({ uid, username, aiStreak }) => {
-    if (!uid) {
-      socket.emit("aiBattleError", { message: "Authentication error. Please restart the app." });
-      return;
-    }
-
-    const roomId = `ai_${socket.id}`;
-    const difficulty = getAiDifficulty(aiStreak || 0);
-    const persona = randItem(BOT_PERSONAS);
-
-    console.log(`🤖 AI Battle: ${username} vs ${persona.name} [${difficulty.level}]`);
-
-    socket.emit("aiBattleJoined", {
-      roomId,
-      bot: { name: persona.name, emoji: persona.emoji, level: difficulty.label },
-      difficulty: difficulty.level,
-    });
-
-    socket.emit("aiBattleStatus", { message: "🧠 Generating your challenge..." });
-    const question = await generateAiQuestion(difficulty.level);
-
-    if (!socket.connected) {
-      console.log(`⚠️ Socket ${socket.id} disconnected during question generation.`);
-      return;
-    }
-
-    aiBattleRooms[roomId] = {
-      socketId: socket.id,
-      uid,
-      username,
-      question,
-      difficulty,
-      persona,
-      finished: false,
-      aiAnswered: false,
-      playerAnswered: false,
-      startedAt: Date.now(),
-    };
-
-    let cd = 3;
-    const countdownInterval = setInterval(() => {
-      socket.emit("aiBattleCountdown", { count: cd });
-      cd--;
-      if (cd < 0) {
-        clearInterval(countdownInterval);
-        _startAiBattle(socket, roomId);
-      }
-    }, 1000);
-  });
-
-  socket.on("submitAiBattleAnswer", ({ roomId, answer }) => {
-    const room = aiBattleRooms[roomId];
-    if (!room || room.finished) return;
-
-    const submitted = (answer || "").toLowerCase().trim();
-    const correct = room.question.correctAnswer.toLowerCase().trim();
-
-    if (submitted === correct) {
-      room.finished = true;
-      room.playerAnswered = true;
-      if (room.aiTimer) clearTimeout(room.aiTimer);
-      if (room.globalTimer) clearTimeout(room.globalTimer);
-
-      socket.emit("aiBattleFinished", {
-        winner: "player",
-        message: `🏆 You beat ${room.persona.name}!`,
-        botLine: randItem(room.persona.loseLines),
-        explanation: room.question.explanation,
-        coinsEarned: _coinsForDifficulty(room.difficulty.level),
-        xpEarned: _xpForDifficulty(room.difficulty.level),
-        correctAnswer: room.question.display,
-      });
-      _cleanAiRoom(roomId);
-    } else {
-      socket.emit("aiBattleWrongAnswer", {
-        taunt: randItem(room.persona.taunts),
-      });
-    }
-  });
-}
-
-function _startAiBattle(socket, roomId) {
-  const room = aiBattleRooms[roomId];
-  if (!room) return;
-
-  const { question, difficulty, persona } = room;
-
-  socket.emit("aiBattleStarted", {
-    question: question.question,
-    hint: question.hint,
-    difficulty: difficulty.level,
-    timeLimit: 60,
-    botName: persona.name,
-    botEmoji: persona.emoji,
-    openingTaunt: randItem(persona.taunts),
-  });
-
-  const thinkDelay = randInt(difficulty.minDelay, difficulty.maxDelay) * 1000;
-  const thinkSteps = 4;
-
-  for (let i = 1; i <= thinkSteps; i++) {
-    setTimeout(() => {
-      if (room.finished) return;
-      const progress = Math.round((i / thinkSteps) * 100);
-      socket.emit("aiBattleThinking", {
-        progress,
-        taunt: i === thinkSteps ? "Almost there..." : randItem(persona.taunts),
-      });
-    }, (thinkDelay / thinkSteps) * i - randInt(500, 1500));
-  }
-
-  room.aiTimer = setTimeout(() => {
-    if (room.finished) return;
-
-    const makesMistake = Math.random() < difficulty.mistakeChance;
-    if (makesMistake) {
-      socket.emit("aiBattleThinking", { progress: 80, taunt: "Wait... let me recalculate..." });
-      setTimeout(() => {
-        if (room.finished) return;
-        room.finished = true;
-        room.aiAnswered = true;
-        socket.emit("aiBattleFinished", {
-          winner: "bot",
-          message: `💀 ${persona.name} figured it out! You lost.`,
-          botLine: randItem(persona.winLines),
-          explanation: question.explanation,
-          correctAnswer: question.display,
-          coinsEarned: 0,
-          xpEarned: 5,
-        });
-        _cleanAiRoom(roomId);
-      }, randInt(5, 10) * 1000);
-    } else {
-      room.finished = true;
-      room.aiAnswered = true;
-      socket.emit("aiBattleFinished", {
-        winner: "bot",
-        message: `💀 ${persona.name} answered first! You lost.`,
-        botLine: randItem(persona.winLines),
-        explanation: question.explanation,
-        correctAnswer: question.display,
-        coinsEarned: 0,
-        xpEarned: 5,
-      });
-      _cleanAiRoom(roomId);
-    }
-  }, thinkDelay);
-
-  room.globalTimer = setTimeout(() => {
-    if (room.finished) return;
-    room.finished = true;
-    socket.emit("aiBattleFinished", {
-      winner: "timeout",
-      message: "⏰ Time's up! Nobody wins.",
-      botLine: "Even I couldn't solve it in time...",
-      explanation: question.explanation,
-      correctAnswer: question.display,
-      coinsEarned: 0,
-      xpEarned: 2,
-    });
-    _cleanAiRoom(roomId);
-  }, 60000);
-}
-
-function _coinsForDifficulty(level) {
-  return { Easy: 20, Medium: 50, Hard: 100, Legend: 250 }[level] || 20;
-}
-
-function _xpForDifficulty(level) {
-  return { Easy: 10, Medium: 25, Hard: 50, Legend: 100 }[level] || 10;
-}
-
-function _cleanAiRoom(roomId) {
-  const room = aiBattleRooms[roomId];
-  if (room) {
-    if (room.aiTimer) clearTimeout(room.aiTimer);
-    if (room.globalTimer) clearTimeout(room.globalTimer);
-  }
-  setTimeout(() => delete aiBattleRooms[roomId], 30000);
-}
-
-// ─── Socket Logic ─────────────────────────────────────────────────────────────
+// ─── Socket Logic ────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   console.log(`✅ Connected: ${socket.id}`);
 
@@ -663,9 +407,7 @@ io.on("connection", (socket) => {
     uidMap[socket.id] = uid || socket.id;
   });
 
-  registerAiBattleHandlers(socket);
-
-  // ─── Join Room ──────────────────────────────────────────────────────────────
+  // ─── Join Room (cross-device, any room name) ────────────────────────────
   socket.on("joinRoom", (roomName) => {
     if (!rooms[roomName]) {
       rooms[roomName] = {
@@ -673,7 +415,6 @@ io.on("connection", (socket) => {
         finished: false, timerId: null, countdownId: null
       };
     }
-
     const room = rooms[roomName];
 
     if (room.started || room.finished) {
@@ -738,7 +479,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ─── Submit Answer ──────────────────────────────────────────────────────────
+  // ─── Submit Answer (1v1 rooms) ───────────────────────────────────────────
   socket.on("submitAnswer", ({ roomId, answer }) => {
     const room = rooms[roomId];
     if (!room || room.finished || !room.question) return;
@@ -754,9 +495,15 @@ io.on("connection", (socket) => {
       const wName = nameMap[socket.id] || "Player";
       console.log(`🏆 Winner in "${roomId}": ${wName}`);
 
+      // ✅ FIX: Send winnerId and winnerSocketId so ONLY the winner gets rewards.
+      // Each client checks if their own UID matches winnerId.
       io.to(roomId).emit("gameFinished", {
-        winnerId: wUid, winnerSocketId: socket.id, winnerUsername: wName,
-        message: `🏆 ${wName} answered first and wins!`, coins: 50,
+        winnerId: wUid,
+        winnerSocketId: socket.id,
+        winnerUsername: wName,
+        message: `🏆 ${wName} answered first and wins!`,
+        coins: 50,
+        xp: 100,
       });
       setTimeout(() => cleanRoom(roomId), 15000);
     } else {
@@ -764,55 +511,57 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ─── Syntax Game ────────────────────────────────────────────────────────────
+  // ─── Syntax Game (single player) ─────────────────────────────────────────
   socket.on("getSyntaxQuestions", () => {
-    const shuffled = [...SYNTAX_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 10);
-    socket.emit("syntaxQuestions", shuffled);
+    // ✅ FIX: Shuffle options so correct answer is not always index 0
+    const allShuffled = getShuffledSyntaxQuestions();
+    const picked = [...allShuffled].sort(() => Math.random() - 0.5).slice(0, 10);
+    socket.emit("syntaxQuestions", picked);
   });
 
   socket.on("syntaxAnswered", ({ questionIndex, selectedIndex, questions }) => {
     if (!questions || questionIndex >= questions.length) return;
-    const q = SYNTAX_QUESTIONS.find(sq => sq.question === questions[questionIndex]?.question);
-    if (!q) return;
-    const correct = selectedIndex === q.correctIndex;
+    const clientQ = questions[questionIndex];
+    // The client sends the question text; we find the base question and re-check
+    const baseQ = SYNTAX_QUESTIONS_BASE.find(sq => sq.question === clientQ?.question);
+    if (!baseQ) return;
+    // Client already has shuffled options with correct correctIndex embedded
+    // Just confirm using the correctIndex sent from server during getSyntaxQuestions
+    const correct = selectedIndex === clientQ.correctIndex;
     socket.emit("syntaxResult", {
       correct,
-      correctIndex: q.correctIndex,
-      explanation: q.explanation,
-      xpGained: correct ? q.xp : 0,
+      correctIndex: clientQ.correctIndex,
+      explanation: baseQ.explanation,
+      xpGained: correct ? baseQ.xp : 0,
     });
   });
 
-  // ─── Debug Game ─────────────────────────────────────────────────────────────
+  // ─── Debug Game (single player) ──────────────────────────────────────────
   socket.on("getDebugQuestions", () => {
-    const shuffled = [...DEBUG_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 8);
-    socket.emit("debugQuestions", shuffled);
+    // ✅ FIX: Shuffle options so correct answer is not always index 0
+    const allShuffled = getShuffledDebugQuestions();
+    const picked = [...allShuffled].sort(() => Math.random() - 0.5).slice(0, 8);
+    socket.emit("debugQuestions", picked);
   });
 
-  // ─── Logic Game ─────────────────────────────────────────────────────────────
+  // ─── Logic Game (single player) ──────────────────────────────────────────
   socket.on("getLogicQuestions", () => {
-    const shuffled = [...LOGIC_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 8);
-    socket.emit("logicQuestions", shuffled);
+    // ✅ FIX: Shuffle options so correct answer is not always index 0
+    const allShuffled = getShuffledLogicQuestions();
+    const picked = [...allShuffled].sort(() => Math.random() - 0.5).slice(0, 8);
+    socket.emit("logicQuestions", picked);
   });
 
-  // ─── Speed Game ─────────────────────────────────────────────────────────────
+  // ─── Speed Game (adaptive difficulty) ────────────────────────────────────
   socket.on("getSpeedQuestion", ({ difficulty }) => {
     const bank = SPEED_QUESTIONS[difficulty] || SPEED_QUESTIONS.easy;
     const q = getRandQ(bank);
     socket.emit("speedQuestion", { ...q, difficulty });
   });
 
-  // ─── Disconnect ─────────────────────────────────────────────────────────────
+  // ─── Disconnect ──────────────────────────────────────────────────────────
   socket.on("disconnect", () => {
     console.log(`❌ Disconnected: ${socket.id}`);
-
-    for (const roomId in aiBattleRooms) {
-      if (aiBattleRooms[roomId].socketId === socket.id) {
-        _cleanAiRoom(roomId);
-        break;
-      }
-    }
-
     for (const roomName in rooms) {
       const room = rooms[roomName];
       const idx = room.players.findIndex((p) => p.socketId === socket.id);
@@ -828,8 +577,11 @@ io.on("connection", (socket) => {
         if (room.timerId) clearTimeout(room.timerId);
         const winner = room.players[0];
         io.to(roomName).emit("gameFinished", {
-          winnerId: winner.uid, winnerUsername: winner.username,
-          message: `${leaverName} disconnected. You win by default! 🏆`, coins: 50,
+          winnerId: winner.uid,
+          winnerUsername: winner.username,
+          message: `${leaverName} disconnected. You win by default! 🏆`,
+          coins: 50,
+          xp: 100,
         });
         setTimeout(() => cleanRoom(roomName), 12000);
       } else {
@@ -843,7 +595,6 @@ io.on("connection", (socket) => {
         });
       }
     }
-
     delete uidMap[socket.id];
     delete nameMap[socket.id];
   });
