@@ -1,5 +1,4 @@
 require("dotenv").config();
-
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -16,11 +15,17 @@ const io = new Server(server, {
   pingInterval: 25000,
 });
 
-// ─── IMPORTANT: Load API key from environment variable ───────────────────────
-// Set GEMINI_API_KEY in your .env file or hosting environment. Never hardcode.
+// ─── API Key ──────────────────────────────────────────────────────────────────
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
+// ─── State ────────────────────────────────────────────────────────────────────
+let rooms = {};
+let uidMap = {};
+let nameMap = {};
+const aiBattleRooms = {};
+
+// ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({
     status: "AlgoArena Server 🚀",
@@ -29,7 +34,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// ─── DSA Question Bank (Room 101 / Open Arena) ──────────────────────────────
+// ─── DSA Question Bank ────────────────────────────────────────────────────────
 const DSA_QUESTIONS = [
   { question: "What is the time complexity of Binary Search?", correctAnswer: "o(log n)", display: "O(log n)", complexity: "Easy", timeLimit: 30 },
   { question: "Which data structure uses LIFO order?", correctAnswer: "stack", display: "Stack", complexity: "Easy", timeLimit: 30 },
@@ -53,7 +58,7 @@ const DSA_QUESTIONS = [
   { question: "Time complexity of finding an element in a balanced BST?", correctAnswer: "o(log n)", display: "O(log n)", complexity: "Medium", timeLimit: 45 },
 ];
 
-// ─── Syntax Game Questions ───────────────────────────────────────────────────
+// ─── Syntax Game Questions ────────────────────────────────────────────────────
 const SYNTAX_QUESTIONS = [
   {
     question: "Complete the Python list comprehension: squares = [___ for x in range(10)]",
@@ -162,7 +167,7 @@ const SYNTAX_QUESTIONS = [
   },
 ];
 
-// ─── Debug Game Questions ────────────────────────────────────────────────────
+// ─── Debug Game Questions ─────────────────────────────────────────────────────
 const DEBUG_QUESTIONS = [
   {
     buggyCode: "def binary_search(arr, target):\n    left, right = 0, len(arr)\n    while left < right:\n        mid = (left + right) // 2\n        if arr[mid] == target: return mid\n        elif arr[mid] < target: left = mid + 1\n        else: right = mid - 1\n    return -1",
@@ -230,7 +235,7 @@ const DEBUG_QUESTIONS = [
   },
 ];
 
-// ─── Logic Game Questions ────────────────────────────────────────────────────
+// ─── Logic Game Questions ─────────────────────────────────────────────────────
 const LOGIC_QUESTIONS = [
   {
     question: "You have 8 balls, one is heavier. Using a balance scale, what's the minimum weighings needed to find the heavy ball?",
@@ -304,7 +309,7 @@ const LOGIC_QUESTIONS = [
   },
 ];
 
-// ─── Speed Game Questions (multi-difficulty) ─────────────────────────────────
+// ─── Speed Game Questions ─────────────────────────────────────────────────────
 const SPEED_QUESTIONS = {
   easy: [
     { question: "Time complexity of accessing array by index?", answer: "o(1)", display: "O(1)" },
@@ -344,16 +349,17 @@ const SPEED_QUESTIONS = {
   ],
 };
 
-// ─── State ──────────────────────────────────────────────────────────────────
-let rooms = {};
-let uidMap = {};
-let nameMap = {};
-
-// ─── AI Battle Room Storage ──────────────────────────────────────────────────
-const aiBattleRooms = {};
-
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function getRandQ(bank) {
   return bank[Math.floor(Math.random() * bank.length)];
+}
+
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randItem(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 function cleanRoom(name) {
@@ -365,17 +371,7 @@ function cleanRoom(name) {
   console.log(`🗑️  Room "${name}" cleaned up`);
 }
 
-// ─── Helper: random integer in range ────────────────────────────────────────
-function randInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-// ─── Helper: pick random item from array ────────────────────────────────────
-function randItem(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-// ─── AI Bot Personalities ────────────────────────────────────────────────────
+// ─── AI Bot Personalities ─────────────────────────────────────────────────────
 const BOT_PERSONAS = [
   {
     name: "GlitchBot",
@@ -400,17 +396,16 @@ const BOT_PERSONAS = [
   },
 ];
 
-// ─── Difficulty Settings ─────────────────────────────────────────────────────
+// ─── Difficulty Settings ──────────────────────────────────────────────────────
 function getAiDifficulty(userWinStreak) {
-  if (userWinStreak <= 1) return { level: "Easy",   minDelay: 25, maxDelay: 40, mistakeChance: 0.30, label: "Rookie"   };
-  if (userWinStreak <= 3) return { level: "Medium", minDelay: 15, maxDelay: 25, mistakeChance: 0.15, label: "Pro"      };
-  if (userWinStreak <= 5) return { level: "Hard",   minDelay: 8,  maxDelay: 15, mistakeChance: 0.05, label: "Elite"    };
-  return                         { level: "Legend", minDelay: 3,  maxDelay: 8,  mistakeChance: 0.00, label: "Legend"   };
+  if (userWinStreak <= 1) return { level: "Easy",   minDelay: 25, maxDelay: 40, mistakeChance: 0.30, label: "Rookie"  };
+  if (userWinStreak <= 3) return { level: "Medium", minDelay: 15, maxDelay: 25, mistakeChance: 0.15, label: "Pro"     };
+  if (userWinStreak <= 5) return { level: "Hard",   minDelay: 8,  maxDelay: 15, mistakeChance: 0.05, label: "Elite"   };
+  return                         { level: "Legend", minDelay: 3,  maxDelay: 8,  mistakeChance: 0.00, label: "Legend"  };
 }
 
-// ─── Call Gemini to Generate a Battle Question ───────────────────────────────
+// ─── Gemini Question Generator ────────────────────────────────────────────────
 async function generateAiQuestion(difficulty) {
-  // FIX: If no API key configured, immediately fall back to local questions
   if (!GEMINI_API_KEY) {
     console.warn("⚠️ No GEMINI_API_KEY set. Using fallback question bank.");
     return getRandQ(DSA_QUESTIONS);
@@ -425,7 +420,6 @@ async function generateAiQuestion(difficulty) {
 
   const prompt = `
     Generate a single ${diffMap[difficulty] || "medium-level"} Data Structures and Algorithms quiz question.
-
     Rules:
     - The question should have a SHORT, single-word or short-phrase answer (e.g. "O(log n)", "Stack", "Merge Sort")
     - The answer must be unambiguous
@@ -449,14 +443,12 @@ async function generateAiQuestion(difficulty) {
       }),
     });
 
-    // FIX: Check HTTP status before parsing
     if (!res.ok) {
       throw new Error(`Gemini API error: ${res.status} ${res.statusText}`);
     }
 
     const data = await res.json();
     const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    // Strip markdown code fences if Gemini wraps in ```json
     const clean = raw.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
     return {
@@ -473,12 +465,10 @@ async function generateAiQuestion(difficulty) {
   }
 }
 
-// ─── AI Battle Socket Handlers ───────────────────────────────────────────────
+// ─── AI Battle Handlers ───────────────────────────────────────────────────────
 function registerAiBattleHandlers(socket) {
 
-  // Player taps "JOIN ROOM" on AI Battle card
   socket.on("joinAiBattle", async ({ uid, username, aiStreak }) => {
-    // FIX: Guard against missing uid/username
     if (!uid) {
       socket.emit("aiBattleError", { message: "Authentication error. Please restart the app." });
       return;
@@ -490,24 +480,20 @@ function registerAiBattleHandlers(socket) {
 
     console.log(`🤖 AI Battle: ${username} vs ${persona.name} [${difficulty.level}]`);
 
-    // Tell the player they're in — show bot card immediately
     socket.emit("aiBattleJoined", {
       roomId,
       bot: { name: persona.name, emoji: persona.emoji, level: difficulty.label },
       difficulty: difficulty.level,
     });
 
-    // Fetch question from Gemini (or fallback)
     socket.emit("aiBattleStatus", { message: "🧠 Generating your challenge..." });
     const question = await generateAiQuestion(difficulty.level);
 
-    // FIX: Check if socket is still connected after async Gemini call
     if (!socket.connected) {
       console.log(`⚠️ Socket ${socket.id} disconnected during question generation.`);
       return;
     }
 
-    // Store the room state
     aiBattleRooms[roomId] = {
       socketId: socket.id,
       uid,
@@ -521,7 +507,6 @@ function registerAiBattleHandlers(socket) {
       startedAt: Date.now(),
     };
 
-    // 3-second countdown then start
     let cd = 3;
     const countdownInterval = setInterval(() => {
       socket.emit("aiBattleCountdown", { count: cd });
@@ -533,7 +518,6 @@ function registerAiBattleHandlers(socket) {
     }, 1000);
   });
 
-  // Player submits their answer
   socket.on("submitAiBattleAnswer", ({ roomId, answer }) => {
     const room = aiBattleRooms[roomId];
     if (!room || room.finished) return;
@@ -558,7 +542,6 @@ function registerAiBattleHandlers(socket) {
       });
       _cleanAiRoom(roomId);
     } else {
-      // Wrong answer — send taunt from bot
       socket.emit("aiBattleWrongAnswer", {
         taunt: randItem(room.persona.taunts),
       });
@@ -566,14 +549,12 @@ function registerAiBattleHandlers(socket) {
   });
 }
 
-// ─── Internal: Start the AI Battle ───────────────────────────────────────────
 function _startAiBattle(socket, roomId) {
   const room = aiBattleRooms[roomId];
   if (!room) return;
 
   const { question, difficulty, persona } = room;
 
-  // Send the question to the player
   socket.emit("aiBattleStarted", {
     question: question.question,
     hint: question.hint,
@@ -584,11 +565,9 @@ function _startAiBattle(socket, roomId) {
     openingTaunt: randItem(persona.taunts),
   });
 
-  // Schedule AI "thinking" events — fake typing at intervals
   const thinkDelay = randInt(difficulty.minDelay, difficulty.maxDelay) * 1000;
-
-  // Bot sends progress updates (the "typing..." effect)
   const thinkSteps = 4;
+
   for (let i = 1; i <= thinkSteps; i++) {
     setTimeout(() => {
       if (room.finished) return;
@@ -600,15 +579,12 @@ function _startAiBattle(socket, roomId) {
     }, (thinkDelay / thinkSteps) * i - randInt(500, 1500));
   }
 
-  // Schedule AI answer — maybe wrong first (mistakeChance)
   room.aiTimer = setTimeout(() => {
     if (room.finished) return;
 
     const makesMistake = Math.random() < difficulty.mistakeChance;
     if (makesMistake) {
-      // Bot submits wrong, gives player a chance
       socket.emit("aiBattleThinking", { progress: 80, taunt: "Wait... let me recalculate..." });
-      // Bot tries again 5-10 seconds later
       setTimeout(() => {
         if (room.finished) return;
         room.finished = true;
@@ -640,7 +616,6 @@ function _startAiBattle(socket, roomId) {
     }
   }, thinkDelay);
 
-  // Global time limit fallback (60s)
   room.globalTimer = setTimeout(() => {
     if (room.finished) return;
     room.finished = true;
@@ -674,7 +649,7 @@ function _cleanAiRoom(roomId) {
   setTimeout(() => delete aiBattleRooms[roomId], 30000);
 }
 
-// ─── Socket Logic ────────────────────────────────────────────────────────────
+// ─── Socket Logic ─────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   console.log(`✅ Connected: ${socket.id}`);
 
@@ -688,10 +663,9 @@ io.on("connection", (socket) => {
     uidMap[socket.id] = uid || socket.id;
   });
 
-  // ─── Register AI Battle Handlers (FIX: now correctly inside connection) ──
   registerAiBattleHandlers(socket);
 
-  // ─── Join Room (cross-device, any room name) ────────────────────────────
+  // ─── Join Room ──────────────────────────────────────────────────────────────
   socket.on("joinRoom", (roomName) => {
     if (!rooms[roomName]) {
       rooms[roomName] = {
@@ -699,6 +673,7 @@ io.on("connection", (socket) => {
         finished: false, timerId: null, countdownId: null
       };
     }
+
     const room = rooms[roomName];
 
     if (room.started || room.finished) {
@@ -763,7 +738,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ─── Submit Answer (1v1 rooms) ───────────────────────────────────────────
+  // ─── Submit Answer ──────────────────────────────────────────────────────────
   socket.on("submitAnswer", ({ roomId, answer }) => {
     const room = rooms[roomId];
     if (!room || room.finished || !room.question) return;
@@ -789,13 +764,13 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ─── Syntax Game (single player) ─────────────────────────────────────────
+  // ─── Syntax Game ────────────────────────────────────────────────────────────
   socket.on("getSyntaxQuestions", () => {
     const shuffled = [...SYNTAX_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 10);
     socket.emit("syntaxQuestions", shuffled);
   });
 
-  socket.on("syntaxAnswered", ({ questionIndex, selectedIndex, questions, score, lives }) => {
+  socket.on("syntaxAnswered", ({ questionIndex, selectedIndex, questions }) => {
     if (!questions || questionIndex >= questions.length) return;
     const q = SYNTAX_QUESTIONS.find(sq => sq.question === questions[questionIndex]?.question);
     if (!q) return;
@@ -808,30 +783,29 @@ io.on("connection", (socket) => {
     });
   });
 
-  // ─── Debug Game (single player) ──────────────────────────────────────────
+  // ─── Debug Game ─────────────────────────────────────────────────────────────
   socket.on("getDebugQuestions", () => {
     const shuffled = [...DEBUG_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 8);
     socket.emit("debugQuestions", shuffled);
   });
 
-  // ─── Logic Game (single player) ──────────────────────────────────────────
+  // ─── Logic Game ─────────────────────────────────────────────────────────────
   socket.on("getLogicQuestions", () => {
     const shuffled = [...LOGIC_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 8);
     socket.emit("logicQuestions", shuffled);
   });
 
-  // ─── Speed Game (adaptive difficulty) ────────────────────────────────────
+  // ─── Speed Game ─────────────────────────────────────────────────────────────
   socket.on("getSpeedQuestion", ({ difficulty }) => {
     const bank = SPEED_QUESTIONS[difficulty] || SPEED_QUESTIONS.easy;
     const q = getRandQ(bank);
     socket.emit("speedQuestion", { ...q, difficulty });
   });
 
-  // ─── Disconnect ──────────────────────────────────────────────────────────
+  // ─── Disconnect ─────────────────────────────────────────────────────────────
   socket.on("disconnect", () => {
     console.log(`❌ Disconnected: ${socket.id}`);
 
-    // FIX: Clean up any active AI battle room on disconnect
     for (const roomId in aiBattleRooms) {
       if (aiBattleRooms[roomId].socketId === socket.id) {
         _cleanAiRoom(roomId);
@@ -869,6 +843,7 @@ io.on("connection", (socket) => {
         });
       }
     }
+
     delete uidMap[socket.id];
     delete nameMap[socket.id];
   });
